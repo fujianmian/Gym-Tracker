@@ -12,29 +12,49 @@ class Exercise {
     required this.target,
     this.done = 0,
     this.weight,
+    this.isPerSide = false,
+    this.lastSetCompletedAt,
   });
   final String id;
   final String name;
   final int target;
   final int done;
   final String? weight;
+  final bool isPerSide;
+  final int? lastSetCompletedAt;
   int get left => target - done;
-  String get weightLabel =>
-      weight == null || weight!.isEmpty ? '' : '$weight kg';
-  Exercise copyWith({String? name, int? target, int? done, String? weight}) =>
-      Exercise(
-        id: id,
-        name: name ?? this.name,
-        target: target ?? this.target,
-        done: done ?? this.done,
-        weight: weight ?? this.weight,
-      );
+  String get weightLabel => weight == null || weight!.isEmpty
+      ? ''
+      : isPerSide
+      ? '$weight kg / side'
+      : '$weight kg';
+  Exercise copyWith({
+    String? name,
+    int? target,
+    int? done,
+    String? weight,
+    bool? isPerSide,
+    int? lastSetCompletedAt,
+    bool clearLastSetCompletedAt = false,
+  }) => Exercise(
+    id: id,
+    name: name ?? this.name,
+    target: target ?? this.target,
+    done: done ?? this.done,
+    weight: weight ?? this.weight,
+    isPerSide: isPerSide ?? this.isPerSide,
+    lastSetCompletedAt: clearLastSetCompletedAt
+        ? null
+        : lastSetCompletedAt ?? this.lastSetCompletedAt,
+  );
   Map<String, Object?> toJson() => {
     'id': id,
     'name': name,
     'target': target,
     'done': done,
     'weight': weight,
+    'isPerSide': isPerSide,
+    'lastSetCompletedAt': lastSetCompletedAt,
   };
   factory Exercise.fromJson(Map<String, dynamic> json) => Exercise(
     id: json['id'] as String,
@@ -42,7 +62,29 @@ class Exercise {
     target: (json['target'] as num).toInt(),
     done: (json['done'] as num?)?.toInt() ?? 0,
     weight: json['weight'] as String?,
+    isPerSide: json['isPerSide'] as bool? ?? false,
+    lastSetCompletedAt: (json['lastSetCompletedAt'] as num?)?.toInt(),
   );
+}
+
+List<Exercise> orderExercisesForWorkout(List<Exercise> exercises) {
+  final indexedExercises = exercises.indexed.toList()
+    ..sort((first, second) {
+      final firstComplete = first.$2.done >= first.$2.target;
+      final secondComplete = second.$2.done >= second.$2.target;
+      if (firstComplete != secondComplete) return firstComplete ? 1 : -1;
+
+      final completedSets = second.$2.done.compareTo(first.$2.done);
+      if (completedSets != 0) return completedSets;
+
+      final latestSet = (second.$2.lastSetCompletedAt ?? -1).compareTo(
+        first.$2.lastSetCompletedAt ?? -1,
+      );
+      if (latestSet != 0) return latestSet;
+
+      return first.$1.compareTo(second.$1);
+    });
+  return indexedExercises.map((entry) => entry.$2).toList();
 }
 
 class WorkoutDay {
@@ -77,6 +119,17 @@ class WorkoutDay {
   );
 }
 
+WorkoutDay resetWorkoutProgress(WorkoutDay day) => day.copyWith(
+  exercises: day.exercises
+      .map(
+        (exercise) => exercise.copyWith(done: 0, clearLastSetCompletedAt: true),
+      )
+      .toList(),
+);
+
+String localDateKey(DateTime date) =>
+    '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+
 class WorkoutLog {
   const WorkoutLog({required this.date, required this.title});
 
@@ -109,7 +162,7 @@ class GymSetTracker extends StatelessWidget {
   const GymSetTracker({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'Setwise',
+    title: 'LiftLog',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       useMaterial3: true,
@@ -130,16 +183,19 @@ class TrackerHome extends StatefulWidget {
   State<TrackerHome> createState() => _TrackerHomeState();
 }
 
-class _TrackerHomeState extends State<TrackerHome> {
+class _TrackerHomeState extends State<TrackerHome> with WidgetsBindingObserver {
   static const _workoutsKey = 'gym_workout_days_v2';
   static const _activeKey = 'gym_active_workout_day_v2';
   static const _calendarKey = 'gym_calendar_logs_v1';
   static const _bodyWeightKey = 'gym_body_weight_entries_v1';
+  static const _workoutProgressDateKey = 'gym_workout_progress_date_v1';
   List<WorkoutDay> _days = [];
   List<WorkoutLog> _logs = [];
   List<BodyWeightEntry> _bodyWeights = [];
   String? _activeDayId;
   bool _loading = true;
+  bool _checkingForNewDay = false;
+  String _workoutProgressDate = '';
   int _tab = 0;
 
   WorkoutDay? get _activeDay {
@@ -152,7 +208,19 @@ class _TrackerHomeState extends State<TrackerHome> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _resetProgressForNewDay();
   }
 
   Future<void> _load() async {
@@ -212,6 +280,17 @@ class _TrackerHomeState extends State<TrackerHome> {
             .toList();
       } catch (_) {}
     }
+    final today = localDateKey(DateTime.now());
+    final savedProgressDate = prefs.getString(_workoutProgressDateKey);
+    if (savedProgressDate != null && savedProgressDate != today) {
+      _days = _days.map(resetWorkoutProgress).toList();
+      await prefs.setString(
+        _workoutsKey,
+        jsonEncode(_days.map((day) => day.toJson()).toList()),
+      );
+    }
+    _workoutProgressDate = today;
+    await prefs.setString(_workoutProgressDateKey, today);
     if (mounted) setState(() => _loading = false);
   }
 
@@ -230,6 +309,28 @@ class _TrackerHomeState extends State<TrackerHome> {
       _bodyWeightKey,
       jsonEncode(_bodyWeights.map((entry) => entry.toJson()).toList()),
     );
+    await prefs.setString(_workoutProgressDateKey, _workoutProgressDate);
+  }
+
+  Future<void> _resetProgressForNewDay() async {
+    if (_loading) return;
+    final today = localDateKey(DateTime.now());
+    if (_workoutProgressDate == today) return;
+    setState(() {
+      _days = _days.map(resetWorkoutProgress).toList();
+      _workoutProgressDate = today;
+    });
+    await _save();
+  }
+
+  void _scheduleNewDayCheck() {
+    if (_loading || _checkingForNewDay) return;
+    if (_workoutProgressDate == localDateKey(DateTime.now())) return;
+    _checkingForNewDay = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _resetProgressForNewDay();
+      _checkingForNewDay = false;
+    });
   }
 
   void _updateDay(WorkoutDay day) {
@@ -249,7 +350,7 @@ class _TrackerHomeState extends State<TrackerHome> {
     final result = await showModalBottomSheet<WorkoutDay>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => WorkoutDayEditor(day: day),
+      builder: (_) => EditorBottomSheet(child: WorkoutDayEditor(day: day)),
     );
     if (result == null) return;
     setState(() {
@@ -287,11 +388,7 @@ class _TrackerHomeState extends State<TrackerHome> {
     );
   }
 
-  void _resetDay(WorkoutDay day) => _updateDay(
-    day.copyWith(
-      exercises: day.exercises.map((item) => item.copyWith(done: 0)).toList(),
-    ),
-  );
+  void _resetDay(WorkoutDay day) => _updateDay(resetWorkoutProgress(day));
 
   void _addLog(WorkoutLog log) {
     if (_logs.any((item) => item.date == log.date && item.title == log.title)) {
@@ -299,6 +396,13 @@ class _TrackerHomeState extends State<TrackerHome> {
     }
     setState(() => _logs = [..._logs, log]);
     _save();
+  }
+
+  void _recordLastExerciseStarted(WorkoutDay day) {
+    final now = DateTime.now();
+    final date =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    _addLog(WorkoutLog(date: date, title: day.name));
   }
 
   void _deleteLog(WorkoutLog log) {
@@ -330,6 +434,7 @@ class _TrackerHomeState extends State<TrackerHome> {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    _scheduleNewDayCheck();
     return Scaffold(
       body: SafeArea(
         child: switch (_tab) {
@@ -338,6 +443,7 @@ class _TrackerHomeState extends State<TrackerHome> {
             activeDay: _activeDay,
             onSelectDay: _setActiveDay,
             onDayUpdated: _updateDay,
+            onLastExerciseStarted: _recordLastExerciseStarted,
             onReset: _resetDay,
           ),
           1 => PlanPage(
@@ -384,148 +490,215 @@ class _TrackerHomeState extends State<TrackerHome> {
   }
 }
 
-class WorkoutPage extends StatelessWidget {
+class WorkoutPage extends StatefulWidget {
   const WorkoutPage({
     super.key,
     required this.days,
     required this.activeDay,
     required this.onSelectDay,
     required this.onDayUpdated,
+    required this.onLastExerciseStarted,
     required this.onReset,
   });
   final List<WorkoutDay> days;
   final WorkoutDay? activeDay;
   final ValueChanged<String> onSelectDay;
   final ValueChanged<WorkoutDay> onDayUpdated;
+  final ValueChanged<WorkoutDay> onLastExerciseStarted;
   final ValueChanged<WorkoutDay> onReset;
 
   @override
+  State<WorkoutPage> createState() => _WorkoutPageState();
+}
+
+class _WorkoutPageState extends State<WorkoutPage> {
+  final _scrollController = ScrollController();
+  final _exerciseKeys = <String, GlobalKey>{};
+  bool _isReordering = false;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  GlobalKey _exerciseKeyFor(String exerciseId) =>
+      _exerciseKeys.putIfAbsent(exerciseId, GlobalKey.new);
+
+  Future<void> _scrollToPromotedExercise(String exerciseId) async {
+    if (_isReordering) return;
+    setState(() => _isReordering = true);
+    try {
+      await WidgetsBinding.instance.endOfFrame;
+      final targetContext = _exerciseKeyFor(exerciseId).currentContext;
+      if (targetContext != null && targetContext.mounted) {
+        await Scrollable.ensureVisible(
+          targetContext,
+          duration: const Duration(milliseconds: 650),
+          curve: Curves.easeInOutCubic,
+          alignment: 0.5,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isReordering = false);
+    }
+  }
+
+  void _changeExercise(Exercise replacement) {
+    final day = widget.activeDay;
+    if (day == null) return;
+    final previous = day.exercises.firstWhere(
+      (exercise) => exercise.id == replacement.id,
+    );
+    final completedAnotherSet = replacement.done > previous.done;
+    final updatedExercise = completedAnotherSet
+        ? replacement.copyWith(
+            lastSetCompletedAt: DateTime.now().microsecondsSinceEpoch,
+          )
+        : replacement;
+    final updatedDay = day.copyWith(
+      exercises: day.exercises
+          .map(
+            (exercise) =>
+                exercise.id == updatedExercise.id ? updatedExercise : exercise,
+          )
+          .toList(),
+    );
+    widget.onDayUpdated(updatedDay);
+    _scrollToPromotedExercise(updatedExercise.id);
+
+    final isLastExercise =
+        day.exercises.isNotEmpty && updatedExercise.id == day.exercises.last.id;
+    final lastExerciseJustStarted =
+        isLastExercise &&
+        day.exercises.last.done == 0 &&
+        updatedExercise.done > 0;
+    if (lastExerciseJustStarted) {
+      widget.onLastExerciseStarted(updatedDay);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (activeDay == null) {
+    if (widget.activeDay == null) {
       return const EmptyState(
         icon: Icons.calendar_month_outlined,
         title: 'Create your first workout day',
         description: 'Open Plan, then add a day such as Chest, Back, or Legs.',
       );
     }
-    final day = activeDay!;
+    final day = widget.activeDay!;
     final left = day.target - day.done;
-    return CustomScrollView(
-      slivers: [
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Today’s workout',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Choose a workout day',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 42,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: days.length,
-                    separatorBuilder: (_, index) => const SizedBox(width: 8),
-                    itemBuilder: (_, index) {
-                      final item = days[index];
-                      return ChoiceChip(
-                        label: Text(item.name),
-                        selected: item.id == day.id,
-                        onSelected: (_) => onSelectDay(item.id),
-                      );
-                    },
+    final orderedExercises = orderExercisesForWorkout(day.exercises);
+    return AbsorbPointer(
+      absorbing: _isReordering,
+      child: CustomScrollView(
+        controller: _scrollController,
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Today’s workout',
+                    style: Theme.of(context).textTheme.headlineMedium,
                   ),
-                ),
-                const SizedBox(height: 18),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xff6c4dff),
-                    borderRadius: BorderRadius.circular(24),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Choose a workout day',
+                    style: Theme.of(context).textTheme.titleSmall,
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '${day.name} · $left sets left',
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 4),
-                      Text('${day.done} of ${day.target} sets completed'),
-                      const SizedBox(height: 16),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: LinearProgressIndicator(
-                          value: day.target == 0 ? 0 : day.done / day.target,
-                          minHeight: 9,
-                          backgroundColor: Colors.white24,
-                          valueColor: const AlwaysStoppedAnimation(
-                            Colors.white,
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 42,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: widget.days.length,
+                      separatorBuilder: (_, index) => const SizedBox(width: 8),
+                      itemBuilder: (_, index) {
+                        final item = widget.days[index];
+                        return ChoiceChip(
+                          label: Text(item.name),
+                          selected: item.id == day.id,
+                          onSelected: (_) => widget.onSelectDay(item.id),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xff6c4dff),
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${day.name} · $left sets left',
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        Text('${day.done} of ${day.target} sets completed'),
+                        const SizedBox(height: 16),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: LinearProgressIndicator(
+                            value: day.target == 0 ? 0 : day.done / day.target,
+                            minHeight: 9,
+                            backgroundColor: Colors.white24,
+                            valueColor: const AlwaysStoppedAnimation(
+                              Colors.white,
+                            ),
                           ),
                         ),
+                      ],
+                    ),
+                  ),
+                  if (day.done > 0)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () => widget.onReset(day),
+                        icon: const Icon(Icons.restart_alt),
+                        label: const Text('Start over'),
                       ),
-                    ],
-                  ),
+                    ),
+                  const SizedBox(height: 4),
+                  const Text('Tap an exercise card after each finished set.'),
+                ],
+              ),
+            ),
+          ),
+          if (day.exercises.isEmpty)
+            const SliverFillRemaining(
+              hasScrollBody: false,
+              child: EmptyState(
+                icon: Icons.add_task_outlined,
+                title: 'No exercises in this day',
+                description: 'Open Plan and add exercises to this workout day.',
+              ),
+            )
+          else
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 32),
+              sliver: SliverList.separated(
+                itemCount: orderedExercises.length,
+                separatorBuilder: (_, index) => const SizedBox(height: 10),
+                itemBuilder: (_, index) => WorkoutCard(
+                  key: _exerciseKeyFor(orderedExercises[index].id),
+                  item: orderedExercises[index],
+                  onChange: _changeExercise,
                 ),
-                if (day.done > 0)
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton.icon(
-                      onPressed: () => onReset(day),
-                      icon: const Icon(Icons.restart_alt),
-                      label: const Text('Start over'),
-                    ),
-                  ),
-                const SizedBox(height: 4),
-                const Text('Tap an exercise card after each finished set.'),
-              ],
+              ),
             ),
-          ),
-        ),
-        if (day.exercises.isEmpty)
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: EmptyState(
-              icon: Icons.add_task_outlined,
-              title: 'No exercises in this day',
-              description: 'Open Plan and add exercises to this workout day.',
-            ),
-          )
-        else
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 32),
-            sliver: SliverList.separated(
-              itemCount: day.exercises.length,
-              separatorBuilder: (_, index) => const SizedBox(height: 10),
-              itemBuilder: (_, index) {
-                final exercise = day.exercises[index];
-                return WorkoutCard(
-                  item: exercise,
-                  onChange: (replacement) => onDayUpdated(
-                    day.copyWith(
-                      exercises: day.exercises
-                          .map(
-                            (item) =>
-                                item.id == replacement.id ? replacement : item,
-                          )
-                          .toList(),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -610,7 +783,12 @@ class WorkoutCard extends StatelessWidget {
                 child: OutlinedButton.icon(
                   onPressed: item.done == 0
                       ? null
-                      : () => onChange(item.copyWith(done: item.done - 1)),
+                      : () => onChange(
+                          item.copyWith(
+                            done: item.done - 1,
+                            clearLastSetCompletedAt: item.done == 1,
+                          ),
+                        ),
                   icon: const Icon(Icons.undo, size: 18),
                   label: const Text('Undo last set'),
                 ),
@@ -740,7 +918,7 @@ class _DayExercisesPageState extends State<DayExercisesPage> {
     final result = await showModalBottomSheet<WorkoutDay>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => WorkoutDayEditor(day: _day),
+      builder: (_) => EditorBottomSheet(child: WorkoutDayEditor(day: _day)),
     );
     if (result != null) _save(result);
   }
@@ -749,7 +927,8 @@ class _DayExercisesPageState extends State<DayExercisesPage> {
     final result = await showModalBottomSheet<Exercise>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => ExerciseEditor(exercise: exercise),
+      builder: (_) =>
+          EditorBottomSheet(child: ExerciseEditor(exercise: exercise)),
     );
     if (result == null) return;
     _save(
@@ -932,48 +1111,11 @@ class _CalendarPageState extends State<CalendarPage> {
 
   Future<void> _recordBodyWeight() async {
     final existing = _weightFor(_selectedDate);
-    final controller = TextEditingController(
-      text: existing == null ? '' : existing.kilograms.toString(),
-    );
     final raw = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('记录体重'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('建议在刚睡醒、上厕所后，并且进食或喝水前测量。'),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: const InputDecoration(
-                labelText: '体重',
-                suffixText: 'kg',
-                hintText: '例如 68.5',
-                border: OutlineInputBorder(),
-              ),
-              onSubmitted: (value) => Navigator.pop(context, value),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      builder: (_) =>
+          BodyWeightDialog(initialValue: existing?.kilograms.toString() ?? ''),
     );
-    controller.dispose();
     if (raw == null) return;
     final kilograms = double.tryParse(raw.trim().replaceAll(',', '.'));
     if (kilograms == null || kilograms <= 0) {
@@ -1258,6 +1400,65 @@ class _CalendarPageState extends State<CalendarPage> {
   }
 }
 
+class BodyWeightDialog extends StatefulWidget {
+  const BodyWeightDialog({super.key, required this.initialValue});
+
+  final String initialValue;
+
+  @override
+  State<BodyWeightDialog> createState() => _BodyWeightDialogState();
+}
+
+class _BodyWeightDialogState extends State<BodyWeightDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.of(context).pop(_controller.text);
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('记录体重'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('建议在刚睡醒、上厕所后，并且进食或喝水前测量。'),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _controller,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+            labelText: '体重',
+            suffixText: 'kg',
+            hintText: '例如 68.5',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => _submit(),
+        ),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _submit, child: const Text('保存')),
+    ],
+  );
+}
+
 class EmptyState extends StatelessWidget {
   const EmptyState({
     super.key,
@@ -1293,6 +1494,23 @@ class EmptyState extends StatelessWidget {
   );
 }
 
+class EditorBottomSheet extends StatelessWidget {
+  const EditorBottomSheet({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    top: false,
+    child: AnimatedPadding(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: SingleChildScrollView(child: child),
+    ),
+  );
+}
+
 class WorkoutDayEditor extends StatefulWidget {
   const WorkoutDayEditor({super.key, this.day});
   final WorkoutDay? day;
@@ -1302,6 +1520,7 @@ class WorkoutDayEditor extends StatefulWidget {
 
 class _WorkoutDayEditorState extends State<WorkoutDayEditor> {
   late final TextEditingController _name;
+  bool _isSubmitting = false;
   @override
   void initState() {
     super.initState();
@@ -1314,12 +1533,16 @@ class _WorkoutDayEditorState extends State<WorkoutDayEditor> {
     super.dispose();
   }
 
-  void _submit() {
+  Future<void> _submit() async {
+    if (_isSubmitting) return;
     final name = _name.text.trim();
     if (name.isEmpty) return;
     final old = widget.day;
-    Navigator.pop(
-      context,
+    setState(() => _isSubmitting = true);
+    FocusManager.instance.primaryFocus?.unfocus();
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    Navigator.of(context).pop(
       WorkoutDay(
         id: old?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
         name: name,
@@ -1330,12 +1553,7 @@ class _WorkoutDayEditorState extends State<WorkoutDayEditor> {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: EdgeInsets.fromLTRB(
-      24,
-      24,
-      24,
-      24 + MediaQuery.viewInsetsOf(context).bottom,
-    ),
+    padding: const EdgeInsets.all(24),
     child: Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1347,6 +1565,7 @@ class _WorkoutDayEditorState extends State<WorkoutDayEditor> {
         const SizedBox(height: 20),
         TextField(
           controller: _name,
+          enabled: !_isSubmitting,
           autofocus: true,
           textCapitalization: TextCapitalization.words,
           decoration: const InputDecoration(
@@ -1360,7 +1579,7 @@ class _WorkoutDayEditorState extends State<WorkoutDayEditor> {
         SizedBox(
           width: double.infinity,
           child: FilledButton(
-            onPressed: _submit,
+            onPressed: _isSubmitting ? null : _submit,
             child: Text(
               widget.day == null ? 'Create workout day' : 'Save workout day',
             ),
@@ -1382,12 +1601,15 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
   late final TextEditingController _name;
   late final TextEditingController _weight;
   late int _sets;
+  late bool _perSide;
+  bool _isSubmitting = false;
   @override
   void initState() {
     super.initState();
     _name = TextEditingController(text: widget.exercise?.name ?? '');
     _weight = TextEditingController(text: widget.exercise?.weight ?? '');
     _sets = widget.exercise?.target ?? 3;
+    _perSide = widget.exercise?.isPerSide ?? false;
   }
 
   @override
@@ -1397,31 +1619,31 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
     super.dispose();
   }
 
-  void _submit() {
+  Future<void> _submit() async {
+    if (_isSubmitting) return;
     final name = _name.text.trim();
     if (name.isEmpty) return;
     final weight = _weight.text.trim();
     final old = widget.exercise;
-    Navigator.pop(
-      context,
+    setState(() => _isSubmitting = true);
+    FocusManager.instance.primaryFocus?.unfocus();
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    Navigator.of(context).pop(
       Exercise(
         id: old?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
         name: name,
         target: _sets,
         done: (old?.done ?? 0).clamp(0, _sets).toInt(),
         weight: weight.isEmpty ? null : weight,
+        isPerSide: weight.isEmpty ? false : _perSide,
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: EdgeInsets.fromLTRB(
-      24,
-      24,
-      24,
-      24 + MediaQuery.viewInsetsOf(context).bottom,
-    ),
+    padding: const EdgeInsets.all(24),
     child: Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1433,6 +1655,7 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
         const SizedBox(height: 20),
         TextField(
           controller: _name,
+          enabled: !_isSubmitting,
           autofocus: true,
           textCapitalization: TextCapitalization.words,
           decoration: const InputDecoration(
@@ -1444,6 +1667,7 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
         const SizedBox(height: 16),
         TextField(
           controller: _weight,
+          enabled: !_isSubmitting,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: const InputDecoration(
             labelText: 'Weight (optional)',
@@ -1452,6 +1676,17 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
             border: OutlineInputBorder(),
           ),
           onSubmitted: (_) => _submit(),
+          onChanged: _isSubmitting ? null : (_) => setState(() {}),
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          value: _perSide,
+          onChanged: _weight.text.trim().isEmpty || _isSubmitting
+              ? null
+              : (value) => setState(() => _perSide = value ?? false),
+          title: const Text('Per side'),
+          subtitle: const Text('Leave unticked to record the total weight.'),
         ),
         const SizedBox(height: 20),
         Text('Target sets', style: Theme.of(context).textTheme.titleMedium),
@@ -1460,7 +1695,9 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             IconButton.outlined(
-              onPressed: _sets > 1 ? () => setState(() => _sets--) : null,
+              onPressed: _sets > 1 && !_isSubmitting
+                  ? () => setState(() => _sets--)
+                  : null,
               icon: const Icon(Icons.remove),
             ),
             SizedBox(
@@ -1472,7 +1709,9 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
               ),
             ),
             IconButton.outlined(
-              onPressed: _sets < 20 ? () => setState(() => _sets++) : null,
+              onPressed: _sets < 20 && !_isSubmitting
+                  ? () => setState(() => _sets++)
+                  : null,
               icon: const Icon(Icons.add),
             ),
             const SizedBox(width: 12),
@@ -1483,7 +1722,7 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
         SizedBox(
           width: double.infinity,
           child: FilledButton(
-            onPressed: _submit,
+            onPressed: _isSubmitting ? null : _submit,
             child: const Text('Save exercise'),
           ),
         ),

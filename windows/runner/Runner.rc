@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.gymtracker" "\0"
-            VALUE "FileDescription", "gym_set_tracker" "\0"
+            VALUE "FileDescription", "LiftLog" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "gym_set_tracker" "\0"
+            VALUE "InternalName", "LiftLog" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.gymtracker. All rights reserved." "\0"
-            VALUE "OriginalFilename", "gym_set_tracker.exe" "\0"
-            VALUE "ProductName", "gym_set_tracker" "\0"
+            VALUE "OriginalFilename", "LiftLog.exe" "\0"
+            VALUE "ProductName", "LiftLog" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END
